@@ -70,16 +70,41 @@ final class PresetStatusItem: NSObject, NSMenuDelegate {
 
         if let symbolName = appearance.symbolName,
            let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) {
-            let config = NSImage.SymbolConfiguration(pointSize: pointSize - 2, weight: .medium)
-            let templated = image.withSymbolConfiguration(config) ?? image
-            templated.isTemplate = true
-            button.image = templated
+            // Sizing the symbol to the label's own point size makes it occupy the
+            // same vertical band as the digits, so baseline alignment reads as
+            // level. Rendering it any smaller leaves it sitting visibly low.
+            let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .medium)
+            let symbol = image.withSymbolConfiguration(config) ?? image
+            symbol.isTemplate = true
+            button.image = Self.raised(symbol, by: Self.symbolRise)
         } else {
             button.image = nil
         }
 
         button.toolTip = appearance.tooltip
         button.setAccessibilityLabel(appearance.tooltip)
+    }
+
+    /// How far to raise the symbol so it reads as level with the digits.
+    /// Purely optical — increase to nudge it further up, 0 to disable.
+    /// 0.5 is one device pixel on a Retina display.
+    private static let symbolRise: CGFloat = 0.0
+
+    /// Raises a symbol by `rise` points by padding the bottom of its image, which
+    /// shifts the glyph up within the status item's fixed-height button.
+    private static func raised(_ symbol: NSImage, by rise: CGFloat) -> NSImage {
+        let size = symbol.size
+        guard rise > 0, size.width > 0, size.height > 0 else { return symbol }
+
+        let padded = NSImage(
+            size: NSSize(width: size.width, height: size.height + rise * 2),
+            flipped: false
+        ) { _ in
+            symbol.draw(in: NSRect(x: 0, y: rise * 2, width: size.width, height: size.height))
+            return true
+        }
+        padded.isTemplate = true
+        return padded
     }
 
     // MARK: - Interaction
