@@ -81,7 +81,8 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
 
     private func appearance(forSlot slot: Int) -> PresetStatusItem.Appearance {
         guard let preset = settings.preset(at: slot) else {
-            return .init(title: "--", symbolName: nil, usesMonospacedDigits: false, tooltip: "BarTimer")
+            return .init(kind: .idle, title: "--", symbolName: nil, usesMonospacedDigits: false,
+                         isDimmed: false, tooltip: "BarTimer")
         }
 
         guard engine.isActive(slot: slot) else {
@@ -89,9 +90,11 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
                 ? "Start the \(preset.durationDescription) timer\nRight-click for options"
                 : "\(preset.displayName) has no duration — right-click to set one"
             return .init(
+                kind: preset.isRunnable ? .idle : .needsDuration,
                 title: preset.displayName,
                 symbolName: preset.isRunnable ? nil : "exclamationmark.triangle",
                 usesMonospacedDigits: false,
+                isDimmed: false,
                 tooltip: tooltip
             )
         }
@@ -99,30 +102,40 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
         switch engine.phase {
         case .running:
             return .init(
+                kind: .running,
                 title: formatCountdown(engine.remainingSeconds),
                 symbolName: nil,
                 usesMonospacedDigits: true,
+                isDimmed: false,
                 tooltip: "\(preset.displayName) timer — \(formatCountdown(engine.remainingSeconds)) left\nClick to pause"
             )
         case .paused:
+            // Same title, same font, no glyph: identical width to `.running`, so
+            // pausing dims in place instead of shoving the menu bar around.
             return .init(
+                kind: .paused,
                 title: formatCountdown(engine.remainingSeconds),
-                symbolName: "pause.fill",
+                symbolName: nil,
                 usesMonospacedDigits: true,
+                isDimmed: true,
                 tooltip: "\(preset.displayName) timer paused — \(formatCountdown(engine.remainingSeconds)) left\nClick to resume"
             )
         case .finished:
             return .init(
+                kind: .finished,
                 title: "Done",
                 symbolName: "bell.fill",
                 usesMonospacedDigits: false,
+                isDimmed: false,
                 tooltip: "\(preset.displayName) timer finished\nClick to dismiss"
             )
         case .idle:
             return .init(
+                kind: .idle,
                 title: preset.displayName,
                 symbolName: nil,
                 usesMonospacedDigits: false,
+                isDimmed: false,
                 tooltip: "Start the \(preset.durationDescription) timer"
             )
         }
