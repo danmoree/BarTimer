@@ -6,7 +6,8 @@
 import AppKit
 import Foundation
 
-/// Drives the single active countdown.
+/// Drives one countdown. Each preset slot owns its own engine, so several timers
+/// can run at the same time without interfering with one another.
 ///
 /// The countdown is stored as an absolute `endDate` rather than a decrementing
 /// counter, so the display can never drift and a timer that spans a sleep/wake
@@ -25,13 +26,11 @@ final class TimerEngine {
     private static let finishedDisplayDuration: TimeInterval = 90
 
     private(set) var phase: Phase = .idle
-    /// Which preset slot the current countdown belongs to, if any.
-    private(set) var activeSlot: Int?
 
     /// Called whenever the visible state changes and the menu bar needs redrawing.
     var onChange: (() -> Void)?
-    /// Called once when a countdown reaches zero.
-    var onFinish: ((Int) -> Void)?
+    /// Called once when this countdown reaches zero.
+    var onFinish: (() -> Void)?
 
     private var ticker: Timer?
     private var finishedTimer: Timer?
@@ -50,9 +49,12 @@ final class TimerEngine {
 
     // MARK: - Queries
 
-    var isActive: Bool { activeSlot != nil && phase != .idle }
+    var isActive: Bool { phase != .idle }
 
-    func isActive(slot: Int) -> Bool { activeSlot == slot && phase != .idle }
+    var isPaused: Bool {
+        if case .paused = phase { return true }
+        return false
+    }
 
     /// Seconds still to run, rounded up so a 5-minute timer reads "5:00" the
     /// instant it starts and "0:01" for the final second.
@@ -69,10 +71,9 @@ final class TimerEngine {
 
     // MARK: - Control
 
-    func start(slot: Int, duration: TimeInterval) {
+    func start(duration: TimeInterval) {
         guard duration >= 1 else { return }
         stopTicking()
-        activeSlot = slot
         phase = .running(endDate: Date().addingTimeInterval(duration))
         lastDisplayedSeconds = nil
         beginTicking()
@@ -116,7 +117,6 @@ final class TimerEngine {
 
     func stop() {
         stopTicking()
-        activeSlot = nil
         phase = .idle
         notifyChange()
     }
@@ -178,11 +178,10 @@ final class TimerEngine {
     }
 
     private func finish() {
-        guard let slot = activeSlot else { return }
         stopTicking()
         phase = .finished
         notifyChange()
-        onFinish?(slot)
+        onFinish?()
 
         let timer = Timer(timeInterval: Self.finishedDisplayDuration, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {

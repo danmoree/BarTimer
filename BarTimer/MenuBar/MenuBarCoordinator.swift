@@ -6,11 +6,13 @@
 import AppKit
 import Combine
 
-/// Owns the menu bar items and wires them to the timer engine and settings.
+/// Owns the menu bar items and wires them to the timers and settings.
 final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
     private let settings: AppSettings
-    private let engine: TimerEngine
     private let notifications: NotificationManager
+
+    /// One countdown per preset slot, so timers run independently.
+    private let engines: [TimerEngine]
 
     private var items: [PresetStatusItem] = []
     private var settingsWindow: SettingsWindowController?
@@ -18,16 +20,18 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
 
     init(
         settings: AppSettings = .shared,
-        engine: TimerEngine = TimerEngine(),
         notifications: NotificationManager = .shared
     ) {
         self.settings = settings
-        self.engine = engine
         self.notifications = notifications
+        self.engines = (0..<AppSettings.slotCount).map { _ in TimerEngine() }
         super.init()
 
-        engine.onChange = { [weak self] in self?.refreshDisplays() }
-        engine.onFinish = { [weak self] slot in self?.handleFinish(slot: slot) }
+        for (slot, engine) in engines.enumerated() {
+            engine.onChange = { [weak self] in self?.refreshDisplays() }
+            engine.onFinish = { [weak self] in self?.handleFinish(slot: slot) }
+        }
+
         notifications.onRestartRequest = { [weak self] slot in self?.start(slot: slot) }
 
         // @Published fires in `willSet`, so hop to the next main-queue turn to
@@ -40,6 +44,10 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
 
     func start() {
         refresh()
+    }
+
+    private func engine(forSlot slot: Int) -> TimerEngine? {
+        engines.indices.contains(slot) ? engines[slot] : nil
     }
 
     // MARK: - Menu bar items
@@ -59,8 +67,8 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
         }
 
         // A countdown whose slot is being hidden would have nowhere to display.
-        if let activeSlot = engine.activeSlot, activeSlot >= desired {
-            engine.stop()
+        for slot in desired..<AppSettings.slotCount where engines[slot].isActive {
+            engines[slot].stop()
         }
 
         for item in items {
@@ -80,12 +88,12 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
     }
 
     private func appearance(forSlot slot: Int) -> PresetStatusItem.Appearance {
-        guard let preset = settings.preset(at: slot) else {
+        guard let preset = settings.preset(at: slot), let engine = engine(forSlot: slot) else {
             return .init(kind: .idle, title: "--", symbolName: nil, usesMonospacedDigits: false,
                          isDimmed: false, tooltip: "BarTimer")
         }
 
-        guard engine.isActive(slot: slot) else {
+        guard engine.isActive else {
             let tooltip = preset.isRunnable
                 ? "Start the \(preset.durationDescription) timer\nRight-click for options"
                 : "\(preset.displayName) has no duration — right-click to set one"
@@ -144,12 +152,12 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
     // MARK: - Actions
 
     private func start(slot: Int) {
-        guard let preset = settings.preset(at: slot) else { return }
+        guard let preset = settings.preset(at: slot), let engine = engine(forSlot: slot) else { return }
         guard preset.isRunnable else {
             openSettings()
             return
         }
-        engine.start(slot: slot, duration: preset.duration)
+        engine.start(duration: preset.duration)
     }
 
     private func handleFinish(slot: Int) {
@@ -160,10 +168,7 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
     // MARK: - PresetStatusItemDelegate
 
     func statusItem(_ item: PresetStatusItem, wasClickedInSlot slot: Int) {
-        guard engine.isActive(slot: slot) else {
-            start(slot: slot)
-            return
-        }
+        guard let engine = engine(forSlot: slot) else { return }
 
         switch engine.phase {
         case .running, .paused:
@@ -177,39 +182,32 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
 
     func contextMenu(forSlot slot: Int) -> NSMenu {
         let menu = NSMenu()
-        guard let preset = settings.preset(at: slot) else { return menu }
+        guard let preset = settings.preset(at: slot), let engine = engine(forSlot: slot) else { return menu }
 
         menu.addItem(.sectionHeader(title: preset.displayName))
 
-        if engine.isActive(slot: slot) {
-            switch engine.phase {
-            case .running:
-                menu.addItem(item(title: "Pause", action: #selector(togglePause), slot: slot))
-            case .paused:
-                menu.addItem(item(title: "Resume", action: #selector(togglePause), slot: slot))
-            case .finished:
-                menu.addItem(item(title: "Start Again", action: #selector(startTimer), slot: slot))
-                menu.addItem(item(title: "Dismiss", action: #selector(dismissFinished), slot: slot))
-            case .idle:
-                break
+        switch engine.phase {
+        case .running, .paused:
+            menu.addItem(item(title: engine.isPaused ? "Resume" : "Pause", action: #selector(togglePause), slot: slot))
+            menu.addItem(item(title: "Restart", action: #selector(startTimer), slot: slot))
+            menu.addItem(item(title: "Stop", action: #selector(stopTimer), slot: slot))
+            menu.addItem(.separator())
+            menu.addItem(item(title: "Add 1 Minute", action: #selector(addOneMinute), slot: slot))
+            menu.addItem(item(title: "Add 5 Minutes", action: #selector(addFiveMinutes), slot: slot))
+        case .finished:
+            menu.addItem(item(title: "Start Again", action: #selector(startTimer), slot: slot))
+            menu.addItem(item(title: "Dismiss", action: #selector(dismissFinished), slot: slot))
+        case .idle:
+            if preset.isRunnable {
+                menu.addItem(item(title: "Start \(preset.durationDescription)", action: #selector(startTimer), slot: slot))
+            } else {
+                menu.addItem(item(title: "Set a Duration…", action: #selector(openSettingsAction), slot: slot))
             }
+        }
 
-            if engine.phase != .finished {
-                menu.addItem(item(title: "Restart", action: #selector(startTimer), slot: slot))
-                menu.addItem(item(title: "Stop", action: #selector(stopTimer), slot: slot))
-                menu.addItem(.separator())
-                menu.addItem(item(title: "Add 1 Minute", action: #selector(addOneMinute), slot: slot))
-                menu.addItem(item(title: "Add 5 Minutes", action: #selector(addFiveMinutes), slot: slot))
-            }
-        } else if preset.isRunnable {
-            menu.addItem(item(title: "Start \(preset.durationDescription)", action: #selector(startTimer), slot: slot))
-            if engine.isActive {
-                let note = NSMenuItem(title: "Replaces the running timer", action: nil, keyEquivalent: "")
-                note.isEnabled = false
-                menu.addItem(note)
-            }
-        } else {
-            menu.addItem(item(title: "Set a Duration…", action: #selector(openSettingsAction), slot: slot))
+        if engines.contains(where: { $0.isActive }) {
+            menu.addItem(.separator())
+            menu.addItem(item(title: "Stop All Timers", action: #selector(stopAllTimers), slot: slot))
         }
 
         menu.addItem(.separator())
@@ -240,23 +238,34 @@ final class MenuBarCoordinator: NSObject, PresetStatusItemDelegate {
     }
 
     @objc private func togglePause(_ sender: Any?) {
-        engine.togglePause()
+        guard let slot = slot(from: sender) else { return }
+        engine(forSlot: slot)?.togglePause()
     }
 
     @objc private func stopTimer(_ sender: Any?) {
-        engine.stop()
+        guard let slot = slot(from: sender) else { return }
+        engine(forSlot: slot)?.stop()
+    }
+
+    @objc private func stopAllTimers(_ sender: Any?) {
+        for engine in engines where engine.isActive {
+            engine.stop()
+        }
     }
 
     @objc private func dismissFinished(_ sender: Any?) {
-        engine.dismissFinished()
+        guard let slot = slot(from: sender) else { return }
+        engine(forSlot: slot)?.dismissFinished()
     }
 
     @objc private func addOneMinute(_ sender: Any?) {
-        engine.extend(by: 60)
+        guard let slot = slot(from: sender) else { return }
+        engine(forSlot: slot)?.extend(by: 60)
     }
 
     @objc private func addFiveMinutes(_ sender: Any?) {
-        engine.extend(by: 300)
+        guard let slot = slot(from: sender) else { return }
+        engine(forSlot: slot)?.extend(by: 300)
     }
 
     @objc private func openSettingsAction(_ sender: Any?) {
