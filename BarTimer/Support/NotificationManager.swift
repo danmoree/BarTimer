@@ -43,21 +43,26 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Announces a completed countdown. Falls back to an audible alert if
-    /// notifications aren't permitted, so a finished timer is never silent
-    /// *and* invisible.
+    /// The completion chime, from /System/Library/Sounds. Bell-ish options, from
+    /// roundest to driest: Glass, Ping, Bottle, Tink.
+    private static let chime = NSSound(named: NSSound.Name("Ping"))
+
+    /// Announces a completed countdown: one chime, plus a banner if notifications
+    /// are permitted. A finished timer is therefore never both silent and invisible.
     func notifyFinished(preset: TimerPreset, slot: Int, playSound: Bool) {
+        if playSound {
+            ring()
+        }
+
         Task {
             let status = await center.notificationSettings().authorizationStatus
-            guard status == .authorized || status == .provisional else {
-                playFallbackSound(force: playSound)
-                return
-            }
+            guard status == .authorized || status == .provisional else { return }
 
             let content = UNMutableNotificationContent()
             content.title = "Timer Finished"
             content.body = "\(preset.displayName) — \(preset.durationDescription) is up."
-            content.sound = playSound ? .default : nil
+            // Silent: the chime above is the sound, so the alert can't double it.
+            content.sound = nil
             content.categoryIdentifier = Identifier.category
             content.userInfo = [Identifier.slotKey: slot]
 
@@ -66,18 +71,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 content: content,
                 trigger: nil
             )
-
-            do {
-                try await center.add(request)
-            } catch {
-                playFallbackSound(force: playSound)
-            }
+            try? await center.add(request)
         }
     }
 
-    private func playFallbackSound(force: Bool) {
-        guard force else { return }
-        NSSound(named: "Glass")?.play()
+    private func ring() {
+        guard let chime = Self.chime else { return }
+        // Restart rather than no-op if two timers land together.
+        if chime.isPlaying { chime.stop() }
+        chime.play()
     }
 
     // MARK: - UNUserNotificationCenterDelegate
@@ -87,8 +89,9 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         // BarTimer has no windows, so it's usually "in the background" anyway —
-        // but be explicit so the banner shows even when it isn't.
-        [.banner, .sound]
+        // but be explicit so the banner shows even when it isn't. No `.sound`:
+        // `notifyFinished` already played the chime.
+        [.banner]
     }
 
     func userNotificationCenter(
